@@ -1,0 +1,15 @@
+  volumes:
+    mysql_data:
+      driver: local
+  services:
+    mysql:
+      image: docker.io/mysql:latest
+      container_name: mysql
+      restart: always
+      environment:
+        MYSQL_ROOT_PASSWORD: root       # root 密码                  # 初始数据库            # 用户密码
+      ports:
+        - "3306:3306"                           # 暴露到主机的端口
+      volumes:
+        - mysql_data:/var/lib/mysql
+

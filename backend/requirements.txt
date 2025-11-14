@@ -1,0 +1,26 @@
+langchain
+langchain-deepseek
+python-dotenv
+langsmith
+pydantic
+matplotlib
+seaborn
+pandas
+IPython
+pymysql
+scikit-learn
+langchain-tavily
+langgraph-cli
+langgraph-cli[inmem]
+langchain_community
+dashscope
+langgraph-checkpoint-postgres
+psycopg[binary]>=3.1.0
+
+# FastAPI for static file serving
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Python sandbox security
+RestrictedPython>=6.0
+psutil>=5.9.0
