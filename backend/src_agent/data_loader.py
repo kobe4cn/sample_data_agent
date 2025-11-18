@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import pandas as pd
 
@@ -27,6 +27,13 @@ class DatasetConfig:
     reader_kwargs: Mapping[str, Any] | None = None
     numeric_columns: tuple[str, ...] = ()
     datetime_columns: tuple[str, ...] = ()
+    header_row: int | None = None
+    header_rows: tuple[int, ...] | None = None
+    multiheader_depth: int | None = None
+    skiprows: int | tuple[int, ...] | None = None
+    drop_columns: tuple[str, ...] = ()
+    column_mapping: Mapping[str, str] | None = None
+    drop_unnamed_columns: bool = False
 
     def resolve_path(self) -> Path:
         """返回数据文件的绝对路径。"""
@@ -35,28 +42,7 @@ class DatasetConfig:
 
 # 预置数据集配置，可按需扩展
 DATASET_CATALOG: dict[str, DatasetConfig] = {
-    "telco": DatasetConfig(
-        filename="telco_data.csv",
-        description="Telco Customer Churn 数据集（CSV）",
-        numeric_columns=("tenure", "MonthlyCharges", "TotalCharges", "SeniorCitizen"),
-    ),
-    "telco_data": DatasetConfig(
-        filename="telco_data.csv",
-        description="Telco Customer Churn 数据集（CSV）",
-        numeric_columns=("tenure", "MonthlyCharges", "TotalCharges", "SeniorCitizen"),
-    ),
-    "telco_data_encoded": DatasetConfig(
-        filename="telco_data_encoded.csv",
-        description="编码后的 Telco Customer Churn 数据集（CSV）",
-    ),
-    "lego": DatasetConfig(
-        filename="lego.xlsx",
-        description="LEGO 销售示例数据（Excel）",
-    ),
-    "nongfu": DatasetConfig(
-        filename="nongfu.xlsx",
-        description="农夫山泉示例数据（Excel）",
-    ),
+    
 }
 
 
@@ -79,6 +65,84 @@ def get_dataset_config(name: str) -> DatasetConfig:
     return DATASET_CATALOG[key]
 
 
+def _stringify_column_part(value: Any) -> str:
+    """将任意列标签片段转换为干净的字符串。"""
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if not text:
+        return ""
+    if text.lower().startswith("unnamed"):
+        return ""
+    return text
+
+
+def _flatten_column_label(label: Any) -> str:
+    """将可能的 MultiIndex 列名转换为单一字符串。"""
+    if isinstance(label, tuple):
+        parts = [_stringify_column_part(part) for part in label]
+        parts = [part for part in parts if part]
+        return "_".join(parts)
+    return _stringify_column_part(label)
+
+
+def _clean_dataframe_columns(
+    df: pd.DataFrame, *, drop_unnamed: bool = True
+) -> pd.DataFrame:
+    """按需删除空列并应用 flatten/strip 逻辑。"""
+    cleaned_names: list[str] = []
+    keep_mask: list[bool] = []
+    for label in df.columns:
+        flattened = _flatten_column_label(label)
+        if drop_unnamed and not flattened:
+            keep_mask.append(False)
+            continue
+        cleaned_names.append(flattened or str(label).strip())
+        keep_mask.append(True)
+    if keep_mask and not all(keep_mask):
+        df = df.loc[:, keep_mask]
+    if cleaned_names:
+        df.columns = cleaned_names
+    return df
+
+
+def load_multiheader_excel(
+    path: str | Path,
+    *,
+    header_row: int | None = None,
+    header_rows: Sequence[int] | None = None,
+    depth: int | None = None,
+    drop_unnamed: bool = True,
+    reader_kwargs: Mapping[str, Any] | None = None,
+) -> pd.DataFrame:
+    """
+    读取包含多层表头的 Excel 文件，并将列名扁平化。
+
+    Args:
+        path: 文件路径。
+        header_row: 表头起始行（0-index），与 depth 配合使用。
+        header_rows: 显式指定多个表头行（优先级高于 header_row/depth）。
+        depth: 需要合并的表头层数，默认为 1。
+        drop_unnamed: 是否删除空列/Unnamed 列。
+        reader_kwargs: 透传给 pandas.read_excel 的其他参数。
+    """
+    path = Path(path)
+    if header_rows:
+        header = list(header_rows)
+    elif header_row is not None:
+        actual_depth = depth or 1
+        header = list(range(header_row, header_row + actual_depth))
+    else:
+        raise ValueError("必须提供 header_rows 或 header_row 参数")
+
+    kwargs = dict(reader_kwargs or {})
+    kwargs["header"] = header if len(header) > 1 else header[0]
+
+    df = pd.read_excel(path, **kwargs)
+    df = _clean_dataframe_columns(df, drop_unnamed=drop_unnamed)
+    return df
+
+
 def _read_with_config(config: DatasetConfig, **kwargs) -> pd.DataFrame:
     """根据文件后缀自动选择 pandas 读取方法。"""
     path = config.resolve_path()
@@ -91,14 +155,41 @@ def _read_with_config(config: DatasetConfig, **kwargs) -> pd.DataFrame:
     reader_kwargs.update(kwargs)
 
     suffix = path.suffix.lower()
-    if suffix in {".csv", ".txt"}:
-        df = pd.read_csv(path, **reader_kwargs)
-    elif suffix in {".xls", ".xlsx"}:
-        df = pd.read_excel(path, **reader_kwargs)
-    elif suffix == ".json":
-        df = pd.read_json(path, **reader_kwargs)
+    header_rows: tuple[int, ...] | None = config.header_rows
+    if header_rows is None and config.header_row is not None and config.multiheader_depth:
+        header_rows = tuple(
+            range(config.header_row, config.header_row + config.multiheader_depth)
+        )
+
+    use_multiheader_helper = suffix in {".xls", ".xlsx"} and header_rows is not None
+    if use_multiheader_helper:
+        df = load_multiheader_excel(
+            path,
+            header_rows=header_rows,
+            drop_unnamed=config.drop_unnamed_columns,
+            reader_kwargs=reader_kwargs,
+        )
     else:
-        raise ValueError(f"暂不支持读取后缀为 '{suffix}' 的文件：{path}")
+        if config.skiprows is not None and "skiprows" not in reader_kwargs:
+            reader_kwargs["skiprows"] = config.skiprows
+        if config.header_row is not None and "header" not in reader_kwargs:
+            reader_kwargs["header"] = config.header_row
+
+        if suffix in {".csv", ".txt"}:
+            df = pd.read_csv(path, **reader_kwargs)
+        elif suffix in {".xls", ".xlsx"}:
+            df = pd.read_excel(path, **reader_kwargs)
+        elif suffix == ".json":
+            df = pd.read_json(path, **reader_kwargs)
+        else:
+            raise ValueError(f"暂不支持读取后缀为 '{suffix}' 的文件：{path}")
+
+        if isinstance(df.columns, pd.MultiIndex) or config.drop_unnamed_columns:
+            df = _clean_dataframe_columns(
+                df, drop_unnamed=config.drop_unnamed_columns or False
+            )
+
+    df = _apply_column_config(df, config)
     return df
 
 
@@ -115,6 +206,18 @@ def _coerce_datetime_columns(df: pd.DataFrame, columns: Iterable[str]) -> pd.Dat
     for column in columns:
         if column in df.columns:
             df[column] = pd.to_datetime(df[column], errors="coerce")
+    return df
+
+
+def _apply_column_config(df: pd.DataFrame, config: DatasetConfig) -> pd.DataFrame:
+    """根据配置删除或重命名列。"""
+    df = df.copy()
+    if config.drop_columns:
+        existing = [col for col in config.drop_columns if col in df.columns]
+        if existing:
+            df = df.drop(columns=existing)
+    if config.column_mapping:
+        df = df.rename(columns=config.column_mapping)
     return df
 
 
@@ -151,4 +254,5 @@ __all__ = [
     "list_datasets",
     "load_dataset",
     "prepare_dataframe",
+    "load_multiheader_excel",
 ]

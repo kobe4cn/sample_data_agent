@@ -235,17 +235,25 @@ def _format_fig_inter_error(message: str) -> str:
             "请先使用 `load_dataset(...)` 或 `pd.to_numeric(..., errors='coerce')` "
             "将相关列转换为数值类型，并将清洗后的 DataFrame 传给绘图代码。"
         )
+    if "columns must be same length as key" in normalized or "length mismatch" in normalized:
+        return (
+            "❌ 绘图代码执行失败: pandas 报告列名数量与赋值不一致。"
+            "请先确认 DataFrame 的实际列名（例如 `df.columns.tolist()`），"
+            "对于多层表头的 Excel 建议直接使用 `load_dataset('lego')` 或 "
+            "`load_multiheader_excel('data/xxx.xlsx', header_row=..., multiheader_depth=...)` "
+            "获取清洗后的列名，再在绘图代码中引用真实存在的列。"
+        )
     return f"❌ 绘图代码执行失败: {message}"
 
 
 class FigCodeInput(BaseModel):
     """
     数据可视化工具的参数模式定义
-    
+
     用于验证和描述fig_inter工具所需的输入参数。
     """
     py_code: str = Field(
-        description="用于执行的Python绘图代码，必须使用 matplotlib/seaborn 创建图像并赋值给变量 fig。该代码必须满足Python代码的语法规则，并且必须使用Python 3.10 或更高版本。"
+        description="用于执行的Python绘图代码，必须使用 matplotlib/seaborn 创建图像并赋值给变量 fig。该代码必须满足Python代码的语法规则，并且必须使用Python 3.10 或更高版本。支持中文和英文文本内容。"
     )
     fname: str = Field(description="图像对象的变量名，用户从代码中提取并保存为图片")
 
@@ -264,7 +272,7 @@ def fig_inter(py_code: str, fname: str) -> str:
     3. 不要使用 `plt.show()`。
     4. 不要在代码中使用 `fig.savefig()`，工具会自动保存。
     5. 请确保代码最后调用 `fig.tight_layout()`。
-    6. 所有绘图代码中，坐标轴标签（xlabel、ylabel）、标题（title）、图例（legend）等文本内容，如果是中文描述，请翻译成对应的英文进行展示，必须使用英文描述。
+    6. 支持中文和英文文本：坐标轴标签（xlabel、ylabel）、标题（title）、图例（legend）等文本内容可以使用中文或英文。
     7. 在绘图前确保数据已经清洗：可在 `python_inter` 中使用 `load_dataset` 或自定义逻辑创建 `*_df` 变量，再在绘图代码中引用该变量；不要直接对尚未转换为数值类型的列执行数学运算。
 
     示例代码：

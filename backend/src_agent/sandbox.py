@@ -5,10 +5,13 @@ Python 代码沙箱执行模块
 """
 
 import logging
+import platform
 import signal
 import threading
 from contextlib import contextmanager
 from typing import Any
+
+import matplotlib.font_manager as fm
 
 import src_agent.data_loader as data_loader
 from src_agent.config.sandbox_config import SandboxConfig
@@ -25,6 +28,56 @@ class SandboxExecutionError(Exception):
 class SandboxTimeoutError(SandboxExecutionError):
     """沙箱执行超时"""
     pass
+
+
+def _detect_chinese_font() -> str | None:
+    """检测系统可用的中文字体
+
+    根据操作系统自动选择合适的中文字体。
+
+    Returns:
+        找到的第一个可用中文字体名称，如果没有找到则返回 None
+    """
+    system = platform.system()
+
+    # 定义不同操作系统的候选字体列表
+    font_candidates = {
+        "Darwin": [  # macOS
+            "PingFang SC",
+            "Heiti TC",
+            "STHeiti",
+            "Arial Unicode MS",
+        ],
+        "Windows": [
+            "Microsoft YaHei",
+            "SimHei",
+            "SimSun",
+            "FangSong",
+        ],
+        "Linux": [
+            "WenQuanYi Micro Hei",
+            "Droid Sans Fallback",
+            "Noto Sans CJK SC",
+        ],
+    }
+
+    # 获取当前系统的候选字体列表
+    candidates = font_candidates.get(system, [])
+
+    # 获取系统所有可用字体
+    available_fonts = {f.name for f in fm.fontManager.ttflist}
+
+    # 查找第一个可用的中文字体
+    for font_name in candidates:
+        if font_name in available_fonts:
+            logger.info(f"检测到中文字体: {font_name}")
+            return font_name
+
+    logger.warning(
+        f"未找到支持中文的字体。已尝试的字体列表: {candidates}。"
+        "图表中的中文字符可能无法正常显示。"
+    )
+    return None
 
 
 class PythonSandbox:
@@ -47,9 +100,36 @@ class PythonSandbox:
             self.config.shared_data_dir,
         )
 
+        # 配置 matplotlib 中文字体支持
+        self._configure_matplotlib_fonts()
+
         # 全局变量命名空间（在工具间共享）
         self.sandbox_globals: dict[str, Any] = {}
         self._init_globals()
+
+    def _configure_matplotlib_fonts(self) -> None:
+        """配置 matplotlib 以支持中文字体显示"""
+        try:
+            import matplotlib.pyplot as plt
+
+            # 检测可用的中文字体
+            chinese_font = _detect_chinese_font()
+
+            if chinese_font:
+                # 配置 matplotlib 使用检测到的中文字体
+                plt.rcParams["font.sans-serif"] = [chinese_font] + plt.rcParams[
+                    "font.sans-serif"
+                ]
+                # 解决负号 '-' 显示为方块的问题
+                plt.rcParams["axes.unicode_minus"] = False
+                logger.info(f"已配置 matplotlib 使用中文字体: {chinese_font}")
+            else:
+                logger.warning(
+                    "未配置中文字体，matplotlib 将使用默认字体。"
+                    "中文字符可能显示为方框。"
+                )
+        except Exception as e:
+            logger.error(f"配置 matplotlib 中文字体时出错: {e}，将继续使用默认配置")
 
     def _init_globals(self) -> None:
         """初始化全局变量命名空间"""
